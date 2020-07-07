@@ -1,0 +1,207 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Queue 与 Thread 区别 | Gridea</title>
+<link rel="shortcut icon" href="https://kelaking.github.io/favicon.ico?v=1594109359010">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://kelaking.github.io/styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="Queue 与 Thread 区别 | Gridea - Atom Feed" href="https://kelaking.github.io/atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="SDWebImage源码分析发现
+SDWebImageCompat.h 中定义了 dispatch_main_async_safe 这么一段宏，history 中有这么个 commit
+#define dispatch_main_async..." />
+    <meta name="keywords" content="iOS" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="https://cdn.bootcss.com/highlight.js/9.12.0/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://kelaking.github.io">
+  <img class="avatar" src="https://kelaking.github.io/images/avatar.png?v=1594109359010" alt="">
+  </a>
+  <h1 class="site-title">
+    Gridea
+  </h1>
+  <p class="site-description">
+    温故而知新
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              Queue 与 Thread 区别
+            </h2>
+            <div class="post-info">
+              <span>
+                2017-03-09
+              </span>
+              <span>
+                3 min read
+              </span>
+              
+                <a href="https://kelaking.github.io/tag/3B2mf5zro/" class="post-tag">
+                  # iOS
+                </a>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content">
+                <h1 id="sdwebimage源码分析发现">SDWebImage源码分析发现</h1>
+<p><a href="https://github.com/SDWebImage/SDWebImage/blob/master/SDWebImage/Core/SDWebImageCompat.h">SDWebImageCompat.h</a> 中定义了 <code>dispatch_main_async_safe</code> 这么一段宏，history 中有这么个 commit</p>
+<pre><code class="language-diff">#define dispatch_main_async_safe(block)\
+-    if ([NSThread isMainThread]) {\
++    if (strcmp(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL), dispatch_queue_get_label(dispatch_get_main_queue())) == 0) {\
+    block();\
+} else {\
+    dispatch_async(dispatch_get_main_queue(), block);\
+}
+</code></pre>
+<p><code>dispatch_main_async_safe</code> 作用是执行一个 block，如果当前是主线程则直接执行，否则切到主队列中执行。那么问题来了，为什么 <code>[NSThread isMainThread]</code> 不能用来判断是否是主线程呢？<br>
+先看下面一段代码：</p>
+<pre><code class="language-objc">dispatch_queue_t queue = dispatch_queue_create(&quot;KelaKing&quot;, DISPATCH_QUEUE_SERIAL);
+dispatch_sync(queue, ^{
+  if ([NSThread isMainThread]) {
+    NSLog(@&quot;Main thread&quot;);
+  } else {
+    NSLog(@&quot;Background thread&quot;);
+  }
+});
+</code></pre>
+<p>这段代码在主线程中执行，结果输出 <code>Main thread</code>. 如果放在子线程中执行这段代码会输出 <code>Background thread</code>. 看来 block 在哪执行和 queue 没关系？我们查阅 dispatch_sync 官方文档发现最后一段说明了这个问题：</p>
+<blockquote>
+<p>As an optimization, this function invokes the block on the current thread when possible.</p>
+</blockquote>
+<p>大概意思是 block 在哪个线程执行要看 dispatch_sync 它的心情😎<br>
+那么问题来了：</p>
+<ol>
+<li>在主线程执行而不是子线程执行有什么好处吗？</li>
+<li>在主线程中同步到主线程执行不会死锁吗？</li>
+</ol>
+<h1 id="queue-thread">Queue ≠ Thread</h1>
+<p><code>Dispatch</code> 官方文档有一段描述：</p>
+<blockquote>
+<p>Work submitted to dispatch queues are executed on a pool of threads fully managed by the system. No guarantee is made as to the thread on which a task executes.</p>
+</blockquote>
+<p>大概意思是队列在执行不可描述任务时需要一个线程，从系统管理的线程池中选哪个并不重要，反正关了灯都一样😎<br>
+这么看来队列和线程并不对应，commit 中也参照了<a href="http://blog.benjamin-encz.de/post/main-queue-vs-main-thread/">GCD's Main Queue vs. Main Thread</a>. 因为有些 API 不仅要求执行在主线程中，还需要在主队列中。所以 SDWebImage 做出此修改来增加健壮性。dispatch_sync 会阻塞当前队列，并不是阻塞当前线程，所以没有死锁。<br>
+GCD 说了可能在当前线程调用是优化那肯定是有好处的：因为系统切换线程是会有性能损耗的，GCD 发现是同步执行会直接将 block 扔到当前线程执行。你问我为什么知道 GCD 这么干？因为我是猜的……源码上万行吓得我直接删了。</p>
+<h1 id="dispatch_sync-引发的线程安全思考">dispatch_sync 引发的线程安全思考</h1>
+<p>其实除了 <code>dispatch_main_async_safe</code> 宏之前还有 <code>dispatch_main_sync_safe</code>. 删除该宏是因为有可能会发生死锁。<a href="https://www.raywenderlich.com/5370-grand-central-dispatch-tutorial-for-swift-4-part-1-2">深入理解 GCD</a> 也提到不建议在串行队列中使用 dispatch_sync.</p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#sdwebimage%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90%E5%8F%91%E7%8E%B0">SDWebImage源码分析发现</a></li>
+<li><a href="#queue-thread">Queue ≠ Thread</a></li>
+<li><a href="#dispatch_sync-%E5%BC%95%E5%8F%91%E7%9A%84%E7%BA%BF%E7%A8%8B%E5%AE%89%E5%85%A8%E6%80%9D%E8%80%83">dispatch_sync 引发的线程安全思考</a></li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+
+        
+
+        <div class="site-footer">
+  Powered by <a href="https://github.com/getgridea/gridea" target="_blank">Gridea</a>
+  <a class="rss" href="https://kelaking.github.io/atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>
